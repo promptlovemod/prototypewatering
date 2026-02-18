@@ -1,0 +1,491 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h> 
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+#include <Preferences.h>
+#include "time.h"
+#include <LittleFS.h>
+#include <WebServer.h>
+
+// 1. CLOUD & WIFI SETTINGS *Needs to be Customed*
+const char* wifi_primary_ssid = "xxxxxxxx";
+const char* wifi_primary_pass = "xxxxxxxx";
+const char* wifi_backup_ssid  = "xxxxxxxx";
+const char* wifi_backup_pass  = "xxxxxxxx";
+
+// HIVEMQ SETTINGS *Needs to be Customed*
+const char* mqtt_server = "xxxxxxxxx"; 
+const int   mqtt_port   = xxxx; 
+const char* mqtt_user   = "xxxxxxxx";
+const char* mqtt_pass   = "xxxxxxxx";
+
+// MQTT TOPICS
+const char* topic_soil        = "plant/soil";
+const char* topic_raw         = "plant/raw";         
+const char* topic_target      = "plant/target";      
+const char* topic_temp        = "plant/temp";
+const char* topic_humid       = "plant/humid";
+const char* topic_vpd         = "plant/vpd";
+const char* topic_vpd_txt     = "plant/vpd_status";  
+const char* topic_time_txt    = "plant/time_status"; 
+const char* topic_sys_txt     = "plant/system_status"; 
+const char* topic_ip          = "plant/ip";
+
+// COMMANDS
+const char* topic_cmd_pump    = "plant/cmd/pump";    
+const char* topic_cmd_pause   = "plant/cmd/pause";   
+const char* topic_cmd_dht_rst = "plant/cmd/dht_rst"; 
+const char* topic_cmd_sys_rst = "plant/cmd/sys_rst";
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+#define SOIL_PIN 34
+#define RELAY_PIN 25
+#define DHTPIN 19       
+#define DHT_PWR_PIN 27 
+#define DHTTYPE DHT22
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
+DHT dht(DHTPIN, DHTTYPE);
+Preferences preferences; 
+WebServer server(80); 
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+// GLOBALS
+int soilDry = 3000; int soilWet = 1200;    
+float tempC = 0.0; float humid = 0.0; float vpd_kpa = 0.0;
+float smoothedRaw = 0; 
+int displaySoilPct = 0;
+int smartThreshold = 30;
+
+int currentHour = 12; 
+bool timeSynced = false;
+bool isNightMode = false;
+bool systemPaused = false; 
+
+bool isWatering = false;
+int pulseCount = 0;
+bool relayState = false;
+
+// Timers
+unsigned long lastSensorRead = 0;
+unsigned long lastCloudSend = 0;
+unsigned long lastLogTime = 0;
+unsigned long lastAutoCheck = 0;
+unsigned long lastPulseTime = 0;
+unsigned long lastWifiCheck = 0;
+
+// VAR FOR SMOOTHING & SAFETY 
+unsigned long dryStartTime = 0;    // Tracks how long soil has been dry
+unsigned long lastWateringEnd = 0; // Tracks when we finished the last cycle
+bool isDryConfirmed = false;       // Logic flag
+const long SOAK_TIME = 1800000;    // 30 Minutes (in ms) Lockout
+
+// UPDATE STATUS
+void updateStatus(String msg) {
+  if (client.connected()) {
+    client.publish(topic_sys_txt, msg.c_str());
+  }
+  Serial.print("STATUS: "); Serial.println(msg);
+}
+
+// HANDLERS
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  for (int i = 0; i < length; i++) msg += (char)payload[i];
+  
+  if (String(topic) == topic_cmd_pump) {
+    if (msg == "ON") { 
+      isWatering = true; pulseCount = 0; 
+      updateStatus("MANUAL START: USER");
+    } else { 
+      isWatering = false; digitalWrite(RELAY_PIN, LOW); 
+      updateStatus("MANUAL STOP: USER");
+    }
+  }
+  
+  if (String(topic) == topic_cmd_pause) {
+    if (msg == "ON") {
+      systemPaused = true; isWatering = false; digitalWrite(RELAY_PIN, LOW); 
+      updateStatus("SYSTEM PAUSED (DEBUG)");
+    } else {
+      systemPaused = false; 
+      updateStatus("SYSTEM RESUMED");
+    }
+  }
+ if (String(topic) == topic_cmd_dht_rst && msg == "RESET") {
+    updateStatus("Cutting Power via SENSOR...");
+    // Cut Pow
+    digitalWrite(DHT_PWR_PIN, LOW);
+    delay(1000); // Wait 1 s
+    
+    // Res Pow
+    digitalWrite(DHT_PWR_PIN, HIGH);
+    updateStatus("POWER RESTORED. WARMING UP...");
+    delay(2500); // Wait 2.5s for sensor to wake up
+    
+    dht.begin();
+    
+    updateStatus("SENSOR ONLINE");
+
+  // SYS REBOOT
+  if (String(topic) == topic_cmd_sys_rst && msg == "RESET") {
+      updateStatus("REBOOTING ESP32...");
+      delay(1000); ESP.restart();
+  }
+}
+
+void handleDownload() {
+  File file = LittleFS.open("/datalog.csv", "r");
+  if (!file) { server.send(404, "text/plain", "No Data"); return; }
+  server.streamFile(file, "text/csv");
+  file.close();
+}
+
+void setup_wifi() {
+  // Clear Screen First
+  display.clearDisplay(); display.display();
+  display.setTextSize(1); display.setTextColor(WHITE);
+  display.setCursor(0,0); display.println("System Boot...");
+  display.display();
+
+  delay(10);
+  WiFi.begin(wifi_primary_ssid, wifi_primary_pass);
+  unsigned long start = millis();
+  
+  display.print("WiFi 1..."); display.display();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) delay(500);
+
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(); WiFi.begin(wifi_backup_ssid, wifi_backup_pass);
+    display.print("Fail.\nWiFi 2..."); display.display();
+    start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) delay(500);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    display.println("OK!"); display.display();
+    configTime(7 * 3600, 0, "pool.ntp.org"); 
+  } else {
+    display.println("OFFLINE"); display.display();
+  }
+  delay(1000);
+}
+
+void reconnect() {
+  if (WiFi.status() != WL_CONNECTED) return; // Don't try if WiFi dead
+  
+  if (!client.connected()) {
+    String clientId = "ESP32-" + String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      client.subscribe(topic_cmd_pump);
+      client.subscribe(topic_cmd_pause);
+      client.subscribe(topic_cmd_dht_rst);
+      client.subscribe(topic_cmd_sys_rst);
+      updateStatus("CLOUD CONNECTED");
+    }
+  }
+}
+// LOGIC
+// Global var track error time
+unsigned long lastDHTAttempt = 0;
+
+void readSensors() {
+  struct tm timeinfo;
+  if(getLocalTime(&timeinfo)){ currentHour = timeinfo.tm_hour; timeSynced = true; }
+
+  // 1. ADAPTIVE SMOOTHING 
+  int raw = analogRead(SOIL_PIN);
+  if (smoothedRaw == 0) smoothedRaw = raw;
+  
+  float diff = abs(raw - smoothedRaw);
+  // If change is huge (>500), trust it 50%. If small, trust it 1% (filter noise).
+  if (diff > 500) smoothedRaw = (smoothedRaw * 0.5) + (raw * 0.5);
+  else smoothedRaw = (smoothedRaw * 0.99) + (raw * 0.01);
+  
+  int val = (int)smoothedRaw;
+  if (val > soilDry) val = soilDry; if (val < soilWet) val = soilWet;
+  displaySoilPct = map(val, soilDry, soilWet, 0, 100);
+
+  // 2. DHT LOGIC WITH HARDWARE RST 
+  if (!isWatering) {
+     // Check only every 5 sec to save CPU
+     if (millis() - lastDHTAttempt > 5000) { 
+        lastDHTAttempt = millis();
+        
+        float t = dht.readTemperature();
+        float h = dht.readHumidity();
+        if (isnan(t) || isnan(h) || (t == 0 && h == 0)) {
+           
+           Serial.println("SENSOR DEAD (NaN/0)! REBOOTING SENSOR...");
+           updateStatus("SENSOR RESET...");
+
+           // CUT POW
+           digitalWrite(DHT_PWR_PIN, LOW); 
+           delay(500); // Power off for 0.5s
+
+           // RESTORE POW
+           digitalWrite(DHT_PWR_PIN, HIGH);
+           delay(2000); // Wait 2s for sensor to wake up
+           
+           // RESTART SOFTWARE
+           dht.begin(); 
+           
+        } else {
+           // Update var
+           tempC = t; humid = h;
+           
+           // Calculate VPD
+           float leafTemp = tempC - 2.0; 
+           float svp = 0.61078 * exp((17.27 * leafTemp) / (leafTemp + 237.3));
+           float avp = 0.61078 * exp((17.27 * tempC) / (tempC + 237.3)) * (humid / 100.0);
+           vpd_kpa = svp - avp;
+        }
+     }
+  }
+
+  // 3. TARGET LOGIC (VPD & Night Mode)
+  int base = 30;
+  if (vpd_kpa > 1.5) base += 10; else if (vpd_kpa < 0.4) base -= 5;
+  if (timeSynced) {
+    if (currentHour >= 20 || currentHour < 6) { base -= 10; isNightMode = true; }
+    else if (currentHour >= 6 && currentHour < 9) { base += 5; isNightMode = false; }
+    else isNightMode = false;
+  }
+  if (base < 10) base = 10;
+  smartThreshold = base;
+
+  // 4. DISPLAY
+  display.clearDisplay(); display.setTextSize(1); display.setTextColor(WHITE);
+  display.setCursor(0,0);
+  
+  if (millis() - lastWateringEnd < SOAK_TIME && lastWateringEnd != 0) {
+    display.print("SOAKING..."); 
+    long minsLeft = (SOAK_TIME - (millis() - lastWateringEnd)) / 60000;
+    display.print(minsLeft); display.print("m");
+  } 
+  else if (isWatering) display.print("WATERING"); 
+  else if (timeSynced) { display.print(currentHour); display.print(":00"); }
+  
+  display.setCursor(60,0); display.print("Raw:"); display.print((int)smoothedRaw); 
+  display.setCursor(0,15); display.print("VPD: "); display.print(vpd_kpa); display.print(" kPa");
+  display.setTextSize(2); display.setCursor(0,35); display.print(displaySoilPct); display.print("%");
+  display.setTextSize(1); display.setCursor(60,40); display.print("Tgt:"); display.print(smartThreshold);
+  display.display();
+}
+
+void sendToCloud() {
+  if (!client.connected()) return;
+
+  char msg[50];
+  snprintf(msg, 50, "%d", displaySoilPct); client.publish(topic_soil, msg);
+  snprintf(msg, 50, "%d", (int)smoothedRaw); client.publish(topic_raw, msg);
+  snprintf(msg, 50, "%d", smartThreshold); client.publish(topic_target, msg);
+  snprintf(msg, 50, "%.1f", tempC); client.publish(topic_temp, msg);
+  snprintf(msg, 50, "%.1f", humid); client.publish(topic_humid, msg);
+  snprintf(msg, 50, "%.2f", vpd_kpa); client.publish(topic_vpd, msg);
+  
+  client.publish(topic_ip, WiFi.localIP().toString().c_str());
+
+  // ONLY send IDLE status if we aren't busy doing something specific
+  // This prevents overwriting "PULSE 3/6" with "WATERING"
+  if (!isWatering && !systemPaused) {
+     if (displaySoilPct < smartThreshold) client.publish(topic_sys_txt, "THIRSTY (Waiting)");
+     else client.publish(topic_sys_txt, "IDLE (Monitoring)");
+  }
+
+  const char* vpdStat = (vpd_kpa > 1.5) ? "HIGH STRESS" : (vpd_kpa < 0.4) ? "ROT RISK" : "OPTIMAL";
+  client.publish(topic_vpd_txt, vpdStat);
+
+  if(timeSynced) {
+     snprintf(msg, 50, "%02d:00 (%s)", currentHour, isNightMode ? "Night" : "Day");
+     client.publish(topic_time_txt, msg);
+  }
+}
+
+void logToMemory() {
+  if (!timeSynced) return;
+  
+  // Open file in Append mode ("a")
+  File file = LittleFS.open("/datalog.csv", "a");
+  
+  if (file) {
+    struct tm timeinfo; 
+    getLocalTime(&timeinfo);
+    char ts[20]; 
+    strftime(ts, 20, "%Y-%m-%d %H:%M", &timeinfo);
+    
+    // 1. Timestp
+    file.print(ts); file.print(","); 
+    
+    // 2. Soil Moist
+    file.print(displaySoilPct); file.print(","); 
+    
+    // 3. Air Temp
+    file.print(tempC); file.print(","); 
+    
+    // 4. Humid
+    file.print(humid); file.print(","); 
+    
+    // 5. VPD
+    file.print(vpd_kpa); file.print(","); 
+    
+    // 6. Target Threshold
+    file.println(smartThreshold);
+    
+    file.close();
+    Serial.println("Logged: Soil, Temp, Humid, VPD saved to CSV.");
+  } else {
+    Serial.println("Error opening datalog.csv");
+  }
+}
+
+// DETAILED PULSE LOGIC
+void runPulse() {
+  if (!isWatering) return;
+  unsigned long now = millis();
+  char statusBuf[30];
+
+  // STOP CONDITION
+  if (pulseCount >= 6) { 
+    isWatering = false; 
+    digitalWrite(RELAY_PIN, LOW); 
+    client.publish(topic_cmd_pump, "OFF"); 
+    lastWateringEnd = millis();
+    updateStatus("WATERING DONE. SOAKING...");
+    
+    // WAIT 5 SEC before touching the sensor
+    lastDHTAttempt = millis() + 5000; 
+    
+    return; 
+  }
+  
+  // LOGIC
+  if (relayState) {
+    // Currently ON 
+    if (now - lastPulseTime > 500) { // 0.5 Seconds ON
+      digitalWrite(RELAY_PIN, LOW); 
+      relayState = false; lastPulseTime = now; pulseCount++;
+      
+      snprintf(statusBuf, 30, "PULSE %d/6: SOAKING...", pulseCount);
+      updateStatus(statusBuf);
+    }
+  } else {
+    // Currently OFF (WAIT 5 SEC)
+    if (now - lastPulseTime > 5000) { // <--- CHANGED TO 5000 (5 Secs)
+      digitalWrite(RELAY_PIN, HIGH); 
+      relayState = true; lastPulseTime = now; pulseCount++;
+      
+      snprintf(statusBuf, 30, "PULSE %d/6: SPRAYING!", pulseCount);
+      updateStatus(statusBuf);
+    }
+  }
+}
+
+void checkAuto() {
+  if (systemPaused) return; 
+
+  // 1. SOAK LOCKOUT
+  if (millis() - lastWateringEnd < SOAK_TIME && lastWateringEnd != 0) {
+    return; 
+  }
+
+  // 2. HYSTERESIS GAP
+  int triggerPoint = smartThreshold - 2; 
+
+  if (!isWatering && displaySoilPct < triggerPoint) {
+    
+    // 3. CONFIDENCE TIMER 
+    if (dryStartTime == 0) {
+      dryStartTime = millis(); // Start the stopwatch
+    } 
+    else {
+      if (millis() - dryStartTime > 60000) {
+      
+        if (isNightMode && displaySoilPct > 10) return; 
+        
+        isWatering = true; 
+        pulseCount = 0; 
+        relayState = false;
+        dryStartTime = 0; // Reset timer
+        updateStatus("AUTO START: DRY CONFIRMED"); 
+      }
+    }
+  } 
+  else {
+    dryStartTime = 0; 
+  }
+}
+
+// -------------------------
+// SETUP & LOOP
+// -------------------------
+void setup() {
+  Serial.begin(115200);
+  pinMode(SOIL_PIN, INPUT); 
+  pinMode(RELAY_PIN, OUTPUT); 
+  digitalWrite(RELAY_PIN, LOW); 
+  
+  if(!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) for(;;);
+  if(!LittleFS.begin(true)) Serial.println("FS Error");
+
+  preferences.begin("plant-data", false); 
+  soilDry = preferences.getInt("dry", 3000); 
+  soilWet = preferences.getInt("wet", 1200);
+  preferences.end();
+
+ pinMode(DHT_PWR_PIN, OUTPUT);
+  digitalWrite(DHT_PWR_PIN, HIGH); 
+  delay(2000); 
+  dht.begin();
+  
+  display.clearDisplay();
+  display.setTextSize(1); display.setTextColor(WHITE);
+  display.setCursor(0,0);
+  display.println("System Rebooting...");
+  display.println("Warming Sensors...");
+  display.display();
+  
+  delay(2500); 
+  
+  // Force a Dummy Read to clear the sensor pipe
+  dht.readTemperature(); 
+
+  // CONNECT WIFI
+  setup_wifi();
+  
+  // CONNECT CLOUD
+  espClient.setInsecure();
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+  
+  server.on("/download", handleDownload);
+  server.begin();
+}
+
+void loop() {
+  unsigned long now = millis();
+  if (now - lastWifiCheck > 20000) {
+    lastWifiCheck = now;
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi Lost. Reconnecting...");
+      WiFi.disconnect();
+      WiFi.reconnect(); 
+    }
+  }
+  if (!client.connected()) reconnect();
+  client.loop();
+  server.handleClient();
+
+  unsigned long now = millis();
+  if (now - lastSensorRead > 2000) { lastSensorRead = now; readSensors(); }
+  if (now - lastCloudSend > 2500)  { lastCloudSend = now; sendToCloud(); } 
+  if (now - lastLogTime > 900000)  { lastLogTime = now; logToMemory(); }
+  if (now - lastAutoCheck > 5000)  { lastAutoCheck = now; checkAuto(); }
+  runPulse();
+}

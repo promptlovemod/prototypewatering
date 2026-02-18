@@ -12,6 +12,7 @@ Note : *The code is partially AI assisted*
 - Calculate Vapor Pressure Deficit based on DHT22 Value
 - Adaptively waters the plant based on *int base = 30;* (Row 253) The base value will be adaptive based on Vapor Pressure Deficit Value
 - Send all info via HiveMQ Cloud using any Wi-Fi
+- 128*96 OLED Display Support
 
 # How to use it
 Find the file "system esp32" and copy all the code inside the file and upload it via Audrino IDE (Recommended)

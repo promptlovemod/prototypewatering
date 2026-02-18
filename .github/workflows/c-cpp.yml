@@ -1,0 +1,149 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: configure
+      run: ./configure
+    - name: make
+      run: make
+    - name: make check
+      run: make check
+    - name: make distcheck
+      run: make distcheck
+
+            - name: Setup C/C++ Compiler
+  # You may pin to the exact commit or the version.
+  # uses: rlalik/setup-cpp-compiler@f39db50a7fd04bfd65ce41e8fec0ac185ae59dfb
+  uses: rlalik/setup-cpp-compiler@v1.2
+  with:
+    # Compiler to install
+    compiler: gcc-latest 
+
+                - name: Setup Cpp (C++ / C)
+  # You may pin to the exact commit or the version.
+  # uses: aminya/setup-cpp@1f17f92d6a52bfcb1a25348e2c526c2e5cbb1134
+  uses: aminya/setup-cpp@v1.8.0
+  with:
+    # The timeout for installation of one tool (in minutes).
+    timeout: # optional, default is 20
+    # If should cache the installed tools? (Default: false)
+    cache-tools: # optional
+    # The CPU architecture
+    architecture: # optional
+    # The compiler to use and its optional version separated by - e.g. llvm-13.0.0
+    compiler: # optional
+    # Wether to install llvm (true/false) or the specific version to install
+    llvm: # optional
+    # Wether to install clang (true/false) or the specific version to install
+    clang: # optional
+    # Wether to install gcc (true/false) or the specific version to install
+    gcc: # optional
+    # Wether to install msvc (true/false) or the specific version to install
+    msvc: # optional
+    # Wether to install cl (true/false) or the specific version to install
+    cl: # optional
+    # Wether to install msbuild (true/false) or the specific version to install
+    msbuild: # optional
+    # Wether to install visualstudio (true/false) or the specific version to install
+    visualstudio: # optional
+    # Wether to install apple-clang (true/false) or the specific version to install
+    apple-clang: # optional
+    # Wether to install apple-llvm (true/false) or the specific version to install
+    apple-llvm: # optional
+    # Wether to install apple-clang (true/false) or the specific version to install
+    appleclang: # optional
+    # Wether to install apple-llvm (true/false) or the specific version to install
+    applellvm: # optional
+    # If should run vcvarsall?
+    vcvarsall: # optional
+    # Wether to install cppcheck (true/false) or the specific version to install.
+    cppcheck: # optional
+    # Wether to install cpplint (true/false) or the specific version to install.
+    cpplint: # optional
+    # Wether to install flawfinder (true/false) or the specific version to install.
+    flawfinder: # optional
+    # Wether to install lizard (true/false) or the specific version to install.
+    lizard: # optional
+    # Wether to install facebook/infer (true/false) or the specific version to install.
+    infer: # optional
+    # Wether to install clang-tidy (true/false) or the specific version to install.
+    clang-tidy: # optional
+    # The clangWether to install tidy (true/false) or the specific version to install.
+    clangtidy: # optional
+    # The clangWether to install format (true/false) or the specific version to install.
+    clang-format: # optional
+    # The clangWether to install format (true/false) or the specific version to install.
+    clangformat: # optional
+    # Wether to install cmake (true/false) or the specific version to install.
+    cmake: # optional
+    # Wether to install cmakelang (true/false) or the specific version to install.
+    cmakelang: # optional
+    # Wether to install cmake-lint (true/false) or the specific version to install.
+    cmake-lint: # optional
+    # Wether to install cmake-lint (true/false) or the specific version to install.
+    cmakelint: # optional
+    # Wether to install cmake-format (true/false) or the specific version to install.
+    cmake-format: # optional
+    # Wether to install cmake-format (true/false) or the specific version to install.
+    cmakeformat: # optional
+    # Wether to install ninja (true/false) or the specific version to install.
+    ninja: # optional
+    # Wether to install conan (true/false) or the specific version to install.
+    conan: # optional
+    # Wether to install make (true/false) or the specific version to install.
+    make: # optional
+    # Wether to install task (true/false) or the specific version to install.
+    task: # optional
+    # Wether to install vcpkg (true/false) or the specific version to install.
+    vcpkg: # optional
+    # Wether to install meson (true/false) or the specific version to install.
+    meson: # optional
+    # Wether to install chocolatey (true/false) or the specific version to install.
+    choco: # optional
+    # Wether to install brew (true/false) or the specific version to install.
+    brew: # optional
+    # Wether to install nala (true/false) or the specific version to install ("" or "legacy").
+    nala: # optional
+    # Wether to install ccache (true/false) or the specific version to install.
+    ccache: # optional
+    # Wether to install sccache (true/false) or the specific version to install.
+    sccache: # optional
+    # Wether to install doxygen (true/false) or the specific version to install.
+    doxygen: # optional
+    # Wether to install graphviz (true/false) or the specific version to install.
+    graphviz: # optional
+    # Wether to install gcovr (true/false) or the specific version to install.
+    gcovr: # optional
+    # Wether to install opencppcoverage (true/false) or the specific version to install.
+    opencppcoverage: # optional
+    # Wether to install kcov (true/false) or the specific version to install.
+    kcov: # optional
+    # Wether to install 7z (true/false) or the specific version to install.
+    sevenzip: # optional
+    # Wether to install powershell (true/false) or the specific version to install.
+    powershell: # optional
+    # Wether to install pwsh (true/false) or the specific version to install.
+    pwsh: # optional
+    # Wether to install python (true/false) or the specific version to install.
+    python: # optional
+    # Wether to install setup-cpp (true/false) or the specific version to install. (Default to the current version called by the action)
+    setup-cpp: # optional
+    # The node package manager to use (npm/yarn/pnpm) when installing setup-cpp globally
+    node-package-manager: # optional
+    # Wether to install git (true/false) or the specific version to install.
+    git: # optional
+    # Wether to install tar (true/false) or the specific version to install.
+    tar: # optional
+          
+          

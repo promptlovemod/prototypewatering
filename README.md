@@ -3,8 +3,8 @@ Automatic Watering System w ESP32
 
 Hey!
 This is a repo for my Independent Study Project code
-
-Note : *The code is partially AI assisted*
+> [!NOTE]
+> *The code is partially AI assisted*
 ---
 # Feature
 - Receives Temp & Humid Value via DHT22

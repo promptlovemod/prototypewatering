@@ -40,6 +40,7 @@ const char* topic_cmd_pause   = "plant/cmd/pause";
 const char* topic_cmd_dht_rst = "plant/cmd/dht_rst"; 
 const char* topic_cmd_sys_rst = "plant/cmd/sys_rst";
 
+//custom these pins as you desired
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_ADDR 0x3C
